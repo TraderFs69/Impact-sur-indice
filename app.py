@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import requests
 import yfinance as yf
-import re
 
 # ==========================
 # CONFIG
@@ -13,23 +12,17 @@ POLYGON_KEY = st.secrets["POLYGON_API_KEY"]
 NASDAQ_CAP = 0.14
 
 # ==========================
-# UTILS
-# ==========================
-def normalize_ticker(ticker: str) -> str:
-    return ticker.replace(".", "-").strip().upper()
-
-def is_valid_ticker(ticker: str) -> bool:
-    # Rejette les noms d'entreprises (espaces, trop longs, etc.)
-    return bool(re.fullmatch(r"[A-Z\-]{1,6}", ticker))
-
-# ==========================
 # LOAD EXCEL FILES
 # ==========================
 def load_tickers(file):
-    raw = pd.read_excel(file)["Symbol"].dropna().astype(str)
-    tickers = raw.apply(normalize_ticker)
-    tickers = tickers[tickers.apply(is_valid_ticker)]
-    return tickers.unique()
+    return (
+        pd.read_excel(file)["Symbol"]
+        .dropna()
+        .astype(str)
+        .str.replace(".", "-", regex=False)
+        .str.upper()
+        .unique()
+    )
 
 dow_tickers = load_tickers("Dow.xlsx")
 nasdaq_tickers = load_tickers("Nasdaq100.xlsx")
@@ -53,24 +46,20 @@ def get_live_snapshot():
         prev = item.get("prevDay", {}).get("c")
 
         if last and prev and prev > 0:
-            rows.append([
-                t,
-                last,
-                (last - prev) / prev * 100
-            ])
+            rows.append([t, last, (last - prev) / prev * 100])
 
     return pd.DataFrame(rows, columns=["Ticker", "Price", "Return %"])
 
 # ==========================
-# MARKET CAPS (SAFE)
+# MARKET CAPS — FAST & SAFE
 # ==========================
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_market_caps(tickers):
     caps = {}
     for t in tickers:
         try:
-            info = yf.Ticker(t).fast_info
-            caps[t] = info.get("market_cap")
+            fi = yf.Ticker(t).fast_info
+            caps[t] = fi.get("market_cap")
         except:
             caps[t] = None
     return caps
@@ -88,7 +77,7 @@ def apply_cap(weights, cap=NASDAQ_CAP):
     return w / w.sum()
 
 # ==========================
-# BUILD INDEX TABLE
+# BUILD INDEX TABLE (% IMPACT)
 # ==========================
 def build_index_df(tickers, index_type, prices, caps):
     df = prices[prices["Ticker"].isin(tickers)].copy()
