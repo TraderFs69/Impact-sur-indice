@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import yfinance as yf
+import time
 
 # ==========================
 # CONFIG
@@ -27,34 +28,24 @@ dow_tickers = load_tickers("Dow.xlsx")
 nasdaq_tickers = load_tickers("Nasdaq100.xlsx")
 sp500_tickers = load_tickers("sp500_constituents.xlsx")
 
-ALL_REQUIRED = set(dow_tickers) | set(nasdaq_tickers) | set(sp500_tickers)
-
 # ==========================
-# POLYGON SNAPSHOT (SAFE)
+# POLYGON LAST PRICE (SAFE)
 # ==========================
-@st.cache_data(ttl=10)
-def get_live_snapshot():
-    url = (
-        "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers"
-        f"?apiKey={POLYGON_KEY}"
-    )
-    r = requests.get(url, timeout=20)
-
+@st.cache_data(ttl=15)
+def get_last_price(ticker):
+    url = f"https://api.polygon.io/v2/last/trade/{ticker}?apiKey={POLYGON_KEY}"
+    r = requests.get(url, timeout=5)
     if r.status_code != 200:
-        return pd.DataFrame(columns=["Ticker", "Price", "Return %"])
+        return None
+    return r.json()["results"]["p"]
 
-    data = r.json().get("tickers", [])
-
-    rows = []
-    for item in data:
-        t = item.get("ticker")
-        last = item.get("lastTrade", {}).get("p")
-        prev = item.get("prevDay", {}).get("c")
-
-        if t and last and prev and prev > 0:
-            rows.append([t, last, (last - prev) / prev * 100])
-
-    return pd.DataFrame(rows, columns=["Ticker", "Price", "Return %"])
+@st.cache_data(ttl=15)
+def get_prev_close(ticker):
+    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={POLYGON_KEY}"
+    r = requests.get(url, timeout=5)
+    if r.status_code != 200:
+        return None
+    return r.json()["results"][0]["c"]
 
 # ==========================
 # MARKET CAPS (STABLE)
@@ -84,12 +75,24 @@ def apply_cap(weights, cap=NASDAQ_CAP):
     return w / w.sum()
 
 # ==========================
-# BUILD INDEX TABLE (SAFE)
+# BUILD INDEX TABLE
 # ==========================
-def build_index_df(tickers, index_type, prices, caps):
-    df = prices[prices["Ticker"].isin(tickers)].copy()
-    if df.empty:
+def build_index_df(tickers, index_type, caps):
+    rows = []
+
+    for t in tickers:
+        last = get_last_price(t)
+        prev = get_prev_close(t)
+        if last is None or prev is None or prev == 0:
+            continue
+
+        ret = (last - prev) / prev * 100
+        rows.append([t, last, ret])
+
+    if not rows:
         return pd.DataFrame()
+
+    df = pd.DataFrame(rows, columns=["Ticker", "Price", "Return %"])
 
     if index_type == "dow":
         total_price = df["Price"].sum()
@@ -103,36 +106,40 @@ def build_index_df(tickers, index_type, prices, caps):
             df["Weight (%)"] = apply_cap(df["Weight (%)"] / 100) * 100
         df["Impact %"] = df["Weight (%)"] * df["Return %"] / 100
 
-    df["Impact"] = df["Impact %"].apply(lambda x: "🟢 Positif" if x > 0 else "🔴 Négatif")
+    df["Impact"] = df["Impact %"].apply(
+        lambda x: "🟢 Positif" if x > 0 else "🔴 Négatif"
+    )
+
     return df.sort_values("Impact %", ascending=False)
 
 # ==========================
 # UI
 # ==========================
-st.title("📊 Contribution LIVE (%) aux indices")
+st.title("📊 Contribution (%) LIVE aux indices")
 
 if st.button("🔄 Calcul live"):
-    prices_df = get_live_snapshot()
-
-    # 🔍 DIAGNOSTIC VISUEL
-    st.write("📡 Tickers reçus de Polygon :", len(prices_df))
-    st.write("🎯 Tickers attendus :", len(ALL_REQUIRED))
-
-    if prices_df.empty:
-        st.error(
-            "❌ Aucune donnée live reçue de Polygon.\n\n"
-            "Causes possibles :\n"
-            "- Marché fermé\n"
-            "- Snapshot non inclus dans ton plan Polygon\n"
-            "- Limite API atteinte"
-        )
-        st.stop()
-
-    caps = get_market_caps(ALL_REQUIRED)
+    caps = get_market_caps(set(dow_tickers) | set(sp500_tickers) | set(nasdaq_tickers))
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
         st.subheader("🔵 Dow Jones")
-        st.dataframe(build_index_df(dow_tickers, "dow_
+        st.dataframe(
+            build_index_df(dow_tickers, "dow", caps).head(15),
+            width="stretch"
+        )
+
+    with col2:
+        st.subheader("🟢 S&P 500")
+        st.dataframe(
+            build_index_df(sp500_tickers, "sp500", caps).head(15),
+            width="stretch"
+        )
+
+    with col3:
+        st.subheader("🟣 Nasdaq 100")
+        st.dataframe(
+            build_index_df(nasdaq_tickers, "nasdaq", caps).head(15),
+            width="stretch"
+        )
 
