@@ -15,9 +15,29 @@ POLYGON_KEY = st.secrets["POLYGON_API_KEY"]
 # ==========================
 # LOAD EXCEL FILES
 # ==========================
-dow_tickers = pd.read_excel("Dow.xlsx")["Symbol"].dropna().unique().tolist()
-nasdaq_tickers = pd.read_excel("Nasdaq100.xlsx")["Ticker"].dropna().unique().tolist()
-sp500_tickers = pd.read_excel("sp500_constituents.xlsx")["Symbol"].dropna().unique().tolist()
+dow_tickers = (
+    pd.read_excel("Dow.xlsx")["Symbol"]
+    .dropna()
+    .astype(str)
+    .unique()
+    .tolist()
+)
+
+nasdaq_tickers = (
+    pd.read_excel("Nasdaq100.xlsx")["Symbol"]
+    .dropna()
+    .astype(str)
+    .unique()
+    .tolist()
+)
+
+sp500_tickers = (
+    pd.read_excel("sp500_constituents.xlsx")["Symbol"]
+    .dropna()
+    .astype(str)
+    .unique()
+    .tolist()
+)
 
 # ==========================
 # DATA FETCH (CACHED)
@@ -71,7 +91,11 @@ def build_index_df(tickers, index_type):
         mcap = get_market_cap(t)
         rows.append([t, price, delta, mcap])
 
-    df = pd.DataFrame(rows, columns=["Ticker", "Price", "Δ Price", "MarketCap"])
+    df = pd.DataFrame(
+        rows,
+        columns=["Ticker", "Price", "Δ Price", "MarketCap"]
+    )
+
     if df.empty:
         return df
 
@@ -86,15 +110,15 @@ def build_index_df(tickers, index_type):
         if index_type == "nasdaq":
             df["Weight (%)"] = apply_cap(df["Weight (%)"] / 100) * 100
 
-        INDEX_LEVEL = 100  # échelle visuelle
+        INDEX_LEVEL = 100
         df["Impact (pts)"] = (df["Weight (%)"] / 100) * df["Δ Price"] * INDEX_LEVEL
 
-    # Impact direction
     df["Impact"] = df["Impact (pts)"].apply(
         lambda x: "🟢 Positif" if x > 0 else "🔴 Négatif"
     )
 
     df = df.sort_values("Impact (pts)", ascending=False)
+
     return df[
         ["Ticker", "Price", "Δ Price", "Weight (%)", "Impact (pts)", "Impact"]
     ]
