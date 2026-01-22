@@ -28,27 +28,50 @@ dow_tickers = load_tickers("Dow.xlsx")
 nasdaq_tickers = load_tickers("Nasdaq100.xlsx")
 sp500_tickers = load_tickers("sp500_constituents.xlsx")
 
+ALL_REQUIRED_TICKERS = set(dow_tickers) | set(nasdaq_tickers) | set(sp500_tickers)
+
 # ==========================
-# POLYGON SNAPSHOT LIVE
+# POLYGON SNAPSHOT LIVE (PAGINATED + SMART STOP)
 # ==========================
 @st.cache_data(ttl=10, show_spinner=False)
-def get_live_snapshot():
-    url = (
-        "https://api.polygon.io/v2/snapshot/locale/us/"
-        f"markets/stocks/tickers?apiKey={POLYGON_KEY}"
-    )
-    r = requests.get(url, timeout=15).json()
+def get_live_snapshot(required_tickers):
+    collected = {}
+    cursor = None
 
-    rows = []
-    for item in r.get("tickers", []):
-        t = item["ticker"]
-        last = item.get("lastTrade", {}).get("p")
-        prev = item.get("prevDay", {}).get("c")
+    while True:
+        url = (
+            "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers"
+            f"?apiKey={POLYGON_KEY}"
+        )
+        if cursor:
+            url += f"&cursor={cursor}"
 
-        if last and prev and prev > 0:
-            rows.append([t, last, (last - prev) / prev * 100])
+        r = requests.get(url, timeout=20).json()
 
-    return pd.DataFrame(rows, columns=["Ticker", "Price", "Return %"])
+        for item in r.get("tickers", []):
+            t = item.get("ticker")
+            if t not in required_tickers or t in collected:
+                continue
+
+            last = item.get("lastTrade", {}).get("p")
+            prev = item.get("prevDay", {}).get("c")
+
+            if last and prev and prev > 0:
+                collected[t] = {
+                    "Ticker": t,
+                    "Price": last,
+                    "Return %": (last - prev) / prev * 100
+                }
+
+        # arrêt intelligent dès qu'on a tout
+        if len(collected) == len(required_tickers):
+            break
+
+        cursor = r.get("next_url")
+        if not cursor:
+            break
+
+    return pd.DataFrame(collected.values())
 
 # ==========================
 # MARKET CAPS — FAST & SAFE
@@ -58,14 +81,13 @@ def get_market_caps(tickers):
     caps = {}
     for t in tickers:
         try:
-            fi = yf.Ticker(t).fast_info
-            caps[t] = fi.get("market_cap")
+            caps[t] = yf.Ticker(t).fast_info.get("market_cap")
         except:
             caps[t] = None
     return caps
 
 # ==========================
-# NASDAQ CAP
+# NASDAQ CAP LOGIC
 # ==========================
 def apply_cap(weights, cap=NASDAQ_CAP):
     w = weights.copy()
@@ -77,7 +99,7 @@ def apply_cap(weights, cap=NASDAQ_CAP):
     return w / w.sum()
 
 # ==========================
-# BUILD INDEX TABLE (% IMPACT)
+# BUILD INDEX TABLE (IMPACT %)
 # ==========================
 def build_index_df(tickers, index_type, prices, caps):
     df = prices[prices["Ticker"].isin(tickers)].copy()
@@ -110,35 +132,43 @@ def build_index_df(tickers, index_type, prices, caps):
 # ==========================
 # STREAMLIT UI
 # ==========================
-st.title("📊 Contribution (%) LIVE aux indices")
+st.title("📊 Contribution (%) LIVE des actions aux indices")
+
+st.markdown(
+    """
+    - **Prix temps réel Polygon (snapshot)**
+    - Contribution exprimée en **% de variation de l’indice**
+    - Pagination gérée correctement
+    """
+)
 
 if st.button("🔄 Calcul live"):
-    prices = get_live_snapshot()
-    all_tickers = set(dow_tickers) | set(sp500_tickers) | set(nasdaq_tickers)
-    caps = get_market_caps(all_tickers)
+    with st.spinner("Récupération des prix LIVE…"):
+        prices_df = get_live_snapshot(ALL_REQUIRED_TICKERS)
+        caps = get_market_caps(ALL_REQUIRED_TICKERS)
 
-    col1, col2, col3 = st.columns(3)
+        col1, col2, col3 = st.columns(3)
 
-    with col1:
-        st.subheader("🔵 Dow Jones")
-        st.dataframe(
-            build_index_df(dow_tickers, "dow", prices, caps).head(15),
-            width="stretch"
-        )
+        with col1:
+            st.subheader(f"🔵 Dow Jones ({len(dow_tickers)} titres)")
+            st.dataframe(
+                build_index_df(dow_tickers, "dow", prices_df, caps).head(15),
+                width="stretch"
+            )
 
-    with col2:
-        st.subheader("🟢 S&P 500")
-        st.dataframe(
-            build_index_df(sp500_tickers, "sp500", prices, caps).head(15),
-            width="stretch"
-        )
+        with col2:
+            st.subheader(f"🟢 S&P 500 ({len(sp500_tickers)} titres)")
+            st.dataframe(
+                build_index_df(sp500_tickers, "sp500", prices_df, caps).head(15),
+                width="stretch"
+            )
 
-    with col3:
-        st.subheader("🟣 Nasdaq 100")
-        st.dataframe(
-            build_index_df(nasdaq_tickers, "nasdaq", prices, caps).head(15),
-            width="stretch"
-        )
+        with col3:
+            st.subheader(f"🟣 Nasdaq 100 ({len(nasdaq_tickers)} titres)")
+            st.dataframe(
+                build_index_df(nasdaq_tickers, "nasdaq", prices_df, caps).head(15),
+                width="stretch"
+            )
 
 else:
-    st.info("Clique sur **Calcul live**.")
+    st.info("Clique sur **Calcul live** pour afficher les contributions en temps réel.")
