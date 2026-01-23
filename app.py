@@ -11,8 +11,8 @@ st.set_page_config(layout="wide")
 NASDAQ_CAP = 0.14
 DOW_DIVISOR = 0.151987
 
-SP500_LEVEL = 5000     # approximation
-NASDAQ_LEVEL = 17000  # approximation
+SP500_LEVEL = 5000     # approx
+NASDAQ_LEVEL = 17000  # approx
 
 # ======================================
 # LOAD TICKERS
@@ -66,12 +66,10 @@ def get_prices_and_returns(tickers):
         except:
             failed.append(t)
 
-    df = pd.DataFrame(
+    return pd.DataFrame(
         rows,
         columns=["Ticker", "Price", "Return %", "Delta $"]
-    )
-
-    return df, failed
+    ), failed
 
 # ======================================
 # MARKET CAPS
@@ -114,7 +112,7 @@ def build_index(tickers, kind, prices, caps):
     if kind == "dow":
         total_price = df["Price"].sum()
         df["Weight %"] = df["Price"] / total_price * 100
-        df["Impact %"] = df["Weight %"] * df["Return %"] / 100
+        df["Impact x100"] = df["Weight %"] * df["Return %"]
         total_points = df["Delta $"].sum() / DOW_DIVISOR
 
     else:
@@ -126,59 +124,56 @@ def build_index(tickers, kind, prices, caps):
         if kind == "nasdaq":
             df["Weight %"] = apply_cap(df["Weight %"] / 100, NASDAQ_CAP) * 100
 
-        # ✅ correction : / 10 000
-        df["Impact %"] = df["Weight %"] * df["Return %"] / 10000
-        total_impact = df["Impact %"].sum()
+        # 👉 Impact lisible
+        df["Impact x100"] = df["Weight %"] * df["Return %"] / 100
+        total_impact_pct = df["Impact x100"].sum() / 100
 
         if kind == "sp500":
-            total_points = SP500_LEVEL * total_impact
+            total_points = SP500_LEVEL * total_impact_pct
         else:
-            total_points = NASDAQ_LEVEL * total_impact
+            total_points = NASDAQ_LEVEL * total_impact_pct
 
-    df["Sens"] = df["Impact %"].apply(lambda x: "🟢" if x > 0 else "🔴")
+    df["Sens"] = df["Impact x100"].apply(lambda x: "🟢" if x > 0 else "🔴")
 
-    # =========================
-    # FORMAT 2 DÉCIMALES
-    # =========================
-    for col in ["Price", "Return %", "Weight %", "Impact %"]:
-        if col in df:
-            df[col] = df[col].astype(float).round(2)
+    for col in ["Price", "Return %", "Weight %", "Impact x100"]:
+        df[col] = df[col].astype(float).round(2)
 
     df = df.drop(columns=["MarketCap"], errors="ignore")
+    df = df.sort_values("Impact x100", ascending=False).head(10)
     df = df.reset_index(drop=True)
 
-    return df.sort_values("Impact %", ascending=False), round(total_points, 2)
+    return df, round(total_points, 2)
 
 # ======================================
 # UI
 # ======================================
-st.title("📊 Impact des actions sur les indices — Yahoo Finance")
+st.title("📊 Contribution des actions aux indices — Yahoo Finance")
 
 if st.button("🔄 Calcul live"):
     with st.spinner("Calcul en cours…"):
         prices, failed = get_prices_and_returns(ALL_TICKERS)
         caps = get_market_caps(prices["Ticker"].tolist())
 
-        col1, col2, col3 = st.columns(3)
+        c1, c2, c3 = st.columns(3)
 
         dow_df, dow_pts = build_index(dow, "dow", prices, caps)
         sp_df, sp_pts = build_index(sp500, "sp500", prices, caps)
         nas_df, nas_pts = build_index(nasdaq, "nasdaq", prices, caps)
 
-        with col1:
-            st.subheader("🔵 Dow Jones")
+        with c1:
+            st.subheader("🔵 Dow Jones – Top 10")
             st.metric("Impact total", f"{dow_pts:+.2f} pts")
-            st.dataframe(dow_df.head(15), width="stretch")
+            st.dataframe(dow_df, width="stretch")
 
-        with col2:
-            st.subheader("🟢 S&P 500")
+        with c2:
+            st.subheader("🟢 S&P 500 – Top 10")
             st.metric("Impact estimé", f"{sp_pts:+.2f} pts")
-            st.dataframe(sp_df.head(15), width="stretch")
+            st.dataframe(sp_df, width="stretch")
 
-        with col3:
-            st.subheader("🟣 Nasdaq 100")
+        with c3:
+            st.subheader("🟣 Nasdaq 100 – Top 10")
             st.metric("Impact estimé", f"{nas_pts:+.2f} pts")
-            st.dataframe(nas_df.head(15), width="stretch")
+            st.dataframe(nas_df, width="stretch")
 
         if failed:
             with st.expander("Tickers échoués"):
