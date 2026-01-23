@@ -11,11 +11,12 @@ POLYGON_KEY = st.secrets["POLYGON_API_KEY"]
 NASDAQ_CAP = 0.14
 
 # ==========================
-# LOAD EXCEL FILES
+# UTILS
 # ==========================
 def load_tickers(file):
+    df = pd.read_excel(file)
     return (
-        pd.read_excel(file)["Symbol"]
+        df.iloc[:, 0]
         .dropna()
         .astype(str)
         .str.replace(".", "-", regex=False)
@@ -24,48 +25,46 @@ def load_tickers(file):
         .tolist()
     )
 
+def safe_get(url):
+    try:
+        r = requests.get(url, timeout=5)
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except:
+        return None
+
+# ==========================
+# LOAD TICKERS
+# ==========================
 dow_tickers = load_tickers("Dow.xlsx")
 nasdaq_tickers = load_tickers("Nasdaq100.xlsx")
 sp500_tickers = load_tickers("sp500_constituents.xlsx")
 
-ALL_TICKERS = list(set(dow_tickers + nasdaq_tickers + sp500_tickers))
+all_tickers = list(set(dow_tickers + nasdaq_tickers + sp500_tickers))
 
 # ==========================
-# POLYGON — SAFE FUNCTIONS
+# POLYGON DATA
 # ==========================
 @st.cache_data(ttl=20)
 def get_last_price(ticker):
-    try:
-        r = requests.get(
-            f"https://api.polygon.io/v2/last/trade/{ticker}?apiKey={POLYGON_KEY}",
-            timeout=5,
-        )
-        if r.status_code != 200:
-            return None
-        return r.json().get("results", {}).get("p")
-    except:
+    data = safe_get(f"https://api.polygon.io/v2/last/trade/{ticker}?apiKey={POLYGON_KEY}")
+    if not data:
         return None
-
+    return data.get("results", {}).get("p")
 
 @st.cache_data(ttl=300)
 def get_prev_close(ticker):
-    try:
-        r = requests.get(
-            f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={POLYGON_KEY}",
-            timeout=5,
-        )
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        results = data.get("results")
-        if not results or len(results) == 0:
-            return None
-        return results[0].get("c")
-    except:
+    data = safe_get(f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={POLYGON_KEY}")
+    if not data:
         return None
+    results = data.get("results")
+    if not results:
+        return None
+    return results[0].get("c")
 
 # ==========================
-# MARKET CAPS — STABLE
+# MARKET CAPS
 # ==========================
 @st.cache_data(ttl=86400)
 def get_market_caps(tickers):
@@ -80,19 +79,19 @@ def get_market_caps(tickers):
 # ==========================
 # NASDAQ CAP
 # ==========================
-def apply_cap(weights, cap=NASDAQ_CAP):
+def apply_cap(weights, cap):
     w = weights.copy()
     while not w.empty and w.max() > cap:
         excess = (w[w > cap] - cap).sum()
         w[w > cap] = cap
-        redistribute = w < cap
-        if redistribute.sum() == 0:
+        rest = w < cap
+        if rest.sum() == 0:
             break
-        w[redistribute] += (w[redistribute] / w[redistribute].sum()) * excess
+        w[rest] += (w[rest] / w[rest].sum()) * excess
     return w / w.sum()
 
 # ==========================
-# BUILD INDEX TABLE
+# BUILD TABLE
 # ==========================
 def build_index_df(tickers, index_type, caps):
     rows = []
@@ -108,9 +107,7 @@ def build_index_df(tickers, index_type, caps):
         rows.append([t, last, ret])
 
     if not rows:
-        return pd.DataFrame(
-            columns=["Ticker", "Price", "Return %", "Weight (%)", "Impact %", "Impact"]
-        )
+        return pd.DataFrame()
 
     df = pd.DataFrame(rows, columns=["Ticker", "Price", "Return %"])
 
@@ -118,6 +115,7 @@ def build_index_df(tickers, index_type, caps):
         total_price = df["Price"].sum()
         df["Weight (%)"] = df["Price"] / total_price * 100
         df["Impact %"] = df["Weight (%)"] * df["Return %"] / 100
+
     else:
         df["MarketCap"] = df["Ticker"].map(caps)
         df = df.dropna(subset=["MarketCap"])
@@ -127,7 +125,7 @@ def build_index_df(tickers, index_type, caps):
         df["Weight (%)"] = df["MarketCap"] / df["MarketCap"].sum() * 100
 
         if index_type == "nasdaq":
-            df["Weight (%)"] = apply_cap(df["Weight (%)"] / 100) * 100
+            df["Weight (%)"] = apply_cap(df["Weight (%)"] / 100, NASDAQ_CAP) * 100
 
         df["Impact %"] = df["Weight (%)"] * df["Return %"] / 100
 
@@ -135,31 +133,33 @@ def build_index_df(tickers, index_type, caps):
         lambda x: "🟢 Positif" if x > 0 else "🔴 Négatif"
     )
 
-    return df.sort_values("Impact %", ascending=False)[
-        ["Ticker", "Price", "Return %", "Weight (%)", "Impact %", "Impact"]
-    ]
+    return df.sort_values("Impact %", ascending=False)
 
 # ==========================
 # UI
 # ==========================
-st.title("📊 Contribution LIVE (%) des actions aux indices")
-
-st.markdown(
-    """
-    - Prix **temps réel Polygon**
-    - Impact exprimé en **% de l’indice**
-    - Code **robuste** (aucun crash possible)
-    """
-)
+st.title("📊 Impact (%) des actions sur les indices — LIVE")
 
 if st.button("🔄 Calcul live"):
     with st.spinner("Calcul en cours…"):
-        caps = get_market_caps(ALL_TICKERS)
+        caps = get_market_caps(all_tickers)
 
         col1, col2, col3 = st.columns(3)
 
         with col1:
             st.subheader("🔵 Dow Jones")
-            st.dataframe(
-                build_index_df(dow_tickers, "dow", caps).head(15),
-                width="stretch",
+            df_dow = build_index_df(dow_tickers, "dow", caps)
+            st.dataframe(df_dow.head(15), width="stretch")
+
+        with col2:
+            st.subheader("🟢 S&P 500")
+            df_sp = build_index_df(sp500_tickers, "sp500", caps)
+            st.dataframe(df_sp.head(15), width="stretch")
+
+        with col3:
+            st.subheader("🟣 Nasdaq 100")
+            df_nasdaq = build_index_df(nasdaq_tickers, "nasdaq", caps)
+            st.dataframe(df_nasdaq.head(15), width="stretch")
+
+else:
+    st.info("Clique sur **Calcul live** pour lancer le calcul.")
