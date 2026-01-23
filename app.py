@@ -3,20 +3,20 @@ import pandas as pd
 import yfinance as yf
 import time
 
-# ======================================
+# =====================================================
 # CONFIG
-# ======================================
+# =====================================================
 st.set_page_config(layout="wide")
 
 NASDAQ_CAP = 0.14
 DOW_DIVISOR = 0.151987
 
-SP500_LEVEL = 5000     # approx
-NASDAQ_LEVEL = 17000  # approx
+SP500_LEVEL = 5000     # approx (modifiable)
+NASDAQ_LEVEL = 17000  # approx (modifiable)
 
-# ======================================
-# LOAD TICKERS
-# ======================================
+# =====================================================
+# LOAD TICKERS (COLONNE A = Symbol)
+# =====================================================
 def load_tickers(file):
     df = pd.read_excel(file, usecols=["Symbol"])
     return (
@@ -35,9 +35,9 @@ sp500 = load_tickers("sp500_constituents.xlsx")
 
 ALL_TICKERS = sorted(set(dow + nasdaq + sp500))
 
-# ======================================
-# PRICES + RETURNS
-# ======================================
+# =====================================================
+# PRICES + RETURNS (YAHOO — TICKER PAR TICKER)
+# =====================================================
 @st.cache_data(ttl=120)
 def get_prices_and_returns(tickers):
     rows = []
@@ -66,14 +66,16 @@ def get_prices_and_returns(tickers):
         except:
             failed.append(t)
 
-    return pd.DataFrame(
+    df = pd.DataFrame(
         rows,
         columns=["Ticker", "Price", "Return %", "Delta $"]
-    ), failed
+    )
 
-# ======================================
-# MARKET CAPS
-# ======================================
+    return df, failed
+
+# =====================================================
+# MARKET CAPS (YAHOO ROBUSTE)
+# =====================================================
 @st.cache_data(ttl=3600)
 def get_market_caps(tickers):
     caps = {}
@@ -89,9 +91,9 @@ def get_market_caps(tickers):
             caps[t] = None
     return caps
 
-# ======================================
-# NASDAQ CAP
-# ======================================
+# =====================================================
+# NASDAQ CAP FUNCTION
+# =====================================================
 def apply_cap(weights, cap):
     w = weights.copy()
     while not w.empty and w.max() > cap:
@@ -101,20 +103,27 @@ def apply_cap(weights, cap):
         w[rest] += w[rest] / w[rest].sum() * excess
     return w / w.sum()
 
-# ======================================
-# BUILD INDEX
-# ======================================
+# =====================================================
+# BUILD INDEX TABLE
+# =====================================================
 def build_index(tickers, kind, prices, caps):
     df = prices[prices["Ticker"].isin(tickers)].copy()
     if df.empty:
         return df, 0.0
 
+    # =====================
+    # DOW JONES
+    # =====================
     if kind == "dow":
         total_price = df["Price"].sum()
         df["Weight %"] = df["Price"] / total_price * 100
         df["Impact x100"] = df["Weight %"] * df["Return %"]
-        total_points = df["Delta $"].sum() / DOW_DIVISOR
+        df["Points"] = df["Delta $"] / DOW_DIVISOR
+        total_points = df["Points"].sum()
 
+    # =====================
+    # S&P 500 / NASDAQ 100
+    # =====================
     else:
         df["MarketCap"] = df["Ticker"].map(caps)
         df = df[df["MarketCap"].notna() & (df["MarketCap"] > 0)]
@@ -124,18 +133,23 @@ def build_index(tickers, kind, prices, caps):
         if kind == "nasdaq":
             df["Weight %"] = apply_cap(df["Weight %"] / 100, NASDAQ_CAP) * 100
 
-        # 👉 Impact lisible
-        df["Impact x100"] = df["Weight %"] * df["Return %"] / 100
-        total_impact_pct = df["Impact x100"].sum() / 100
+        # Impact VISUEL commun aux 3 indices
+        df["Impact x100"] = df["Weight %"] * df["Return %"]
 
+        # Points par stock
         if kind == "sp500":
-            total_points = SP500_LEVEL * total_impact_pct
+            df["Points"] = SP500_LEVEL * (df["Impact x100"] / 10000)
         else:
-            total_points = NASDAQ_LEVEL * total_impact_pct
+            df["Points"] = NASDAQ_LEVEL * (df["Impact x100"] / 10000)
 
+        total_points = df["Points"].sum()
+
+    # =====================
+    # FORMAT + CLEAN
+    # =====================
     df["Sens"] = df["Impact x100"].apply(lambda x: "🟢" if x > 0 else "🔴")
 
-    for col in ["Price", "Return %", "Weight %", "Impact x100"]:
+    for col in ["Price", "Return %", "Weight %", "Impact x100", "Points"]:
         df[col] = df[col].astype(float).round(2)
 
     df = df.drop(columns=["MarketCap"], errors="ignore")
@@ -144,9 +158,9 @@ def build_index(tickers, kind, prices, caps):
 
     return df, round(total_points, 2)
 
-# ======================================
+# =====================================================
 # UI
-# ======================================
+# =====================================================
 st.title("📊 Contribution des actions aux indices — Yahoo Finance")
 
 if st.button("🔄 Calcul live"):
@@ -178,3 +192,5 @@ if st.button("🔄 Calcul live"):
         if failed:
             with st.expander("Tickers échoués"):
                 st.write(failed)
+else:
+    st.info("Clique sur **Calcul live** pour afficher les contributions.")
