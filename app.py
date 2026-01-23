@@ -103,4 +103,16 @@ if st.button("🔄 Calcul"):
     prices = get_grouped_prices()
     caps = get_caps(ALL)
 
-    c1, c2, c3 = st.columns(
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.subheader("Dow Jones")
+        st.dataframe(build_index(dow, "dow", prices, caps).head(15), width="stretch")
+
+    with c2:
+        st.subheader("S&P 500")
+        st.dataframe(build_index(sp500, "sp500", prices, caps).head(15), width="stretch")
+
+    with c3:
+        st.subheader("Nasdaq 100")
+        st.dataframe(build_index(nasdaq, "nasdaq", prices, caps).head(15), width="stretch")
