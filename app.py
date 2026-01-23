@@ -9,22 +9,18 @@ st.set_page_config(layout="wide")
 NASDAQ_CAP = 0.14
 
 # ==================================================
-# NORMALISATION DES TICKERS
+# NORMALISATION LÉGÈRE (SANS TRANSFORMATION DANGEREUSE)
 # ==================================================
 def normalize(t):
-    t = str(t).upper().strip()
-    if " " in t:
-        t = t.split(" ")[0]      # enlève suffixes type "US", "UW"
-    t = t.replace(".", "-")      # BRK.B -> BRK-B
-    return t
+    return str(t).upper().strip().replace(".", "-")
 
 # ==================================================
-# LOAD TICKERS — COLONNE A UNIQUEMENT
+# LOAD TICKERS — COLONNE A / SYMBOL
 # ==================================================
 def load_tickers(file):
-    df = pd.read_excel(file, usecols=[0])  # colonne A forcée
+    df = pd.read_excel(file, usecols=["Symbol"])
     return (
-        df.iloc[:, 0]
+        df["Symbol"]
         .dropna()
         .astype(str)
         .apply(normalize)
@@ -39,9 +35,9 @@ sp500 = load_tickers("sp500_constituents.xlsx")
 ALL_TICKERS = list(set(dow + nasdaq + sp500))
 
 # ==================================================
-# PRICES & RETURNS VIA YAHOO FINANCE
+# PRICES & RETURNS VIA YAHOO (ROBUSTE)
 # ==================================================
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def get_prices_and_returns(tickers):
     data = yf.download(
         tickers,
@@ -53,25 +49,31 @@ def get_prices_and_returns(tickers):
     )
 
     rows = []
+    rejected = []
 
     for t in tickers:
         try:
             df = data[t]
             if len(df) < 2:
+                rejected.append(t)
                 continue
 
             prev = df["Close"].iloc[-2]
             last = df["Close"].iloc[-1]
 
-            if prev == 0:
+            if pd.isna(prev) or pd.isna(last) or prev == 0:
+                rejected.append(t)
                 continue
 
             ret = (last - prev) / prev * 100
             rows.append([t, last, ret])
         except:
-            continue
+            rejected.append(t)
 
-    return pd.DataFrame(rows, columns=["Ticker", "Price", "Return %"])
+    return (
+        pd.DataFrame(rows, columns=["Ticker", "Price", "Return %"]),
+        rejected
+    )
 
 # ==================================================
 # MARKET CAPS VIA YAHOO
@@ -87,7 +89,7 @@ def get_market_caps(tickers):
     return caps
 
 # ==================================================
-# NASDAQ CAP FUNCTION
+# NASDAQ CAP
 # ==================================================
 def apply_cap(weights, cap):
     w = weights.copy()
@@ -113,7 +115,6 @@ def build_index(tickers, kind, prices, caps):
         total = df["Price"].sum()
         df["Weight (%)"] = df["Price"] / total * 100
         df["Impact %"] = df["Weight (%)"] * df["Return %"] / 100
-
     else:
         df["MarketCap"] = df["Ticker"].map(caps)
         df = df.dropna(subset=["MarketCap"])
@@ -136,19 +137,24 @@ def build_index(tickers, kind, prices, caps):
 # ==================================================
 st.title("📊 Impact (%) des actions sur les indices — Yahoo Finance")
 
-st.caption("Données Yahoo Finance (≈15 min de délai) — Version stable")
+st.caption(
+    "Lecture directe de la colonne A (Symbol). "
+    "Les entrées non reconnues par Yahoo sont ignorées proprement."
+)
 
 if st.button("🔄 Calcul"):
-    with st.spinner("Chargement des données…"):
-        prices = get_prices_and_returns(ALL_TICKERS)
-        caps = get_market_caps(ALL_TICKERS)
+    with st.spinner("Chargement des données Yahoo Finance…"):
+        prices, rejected = get_prices_and_returns(ALL_TICKERS)
+        caps = get_market_caps(prices["Ticker"].tolist())
 
         st.caption(
-            f"Tickers chargés : {len(prices)} | "
-            f"Dow {len(set(dow) & set(prices['Ticker']))}/{len(dow)} | "
-            f"S&P {len(set(sp500) & set(prices['Ticker']))}/{len(sp500)} | "
-            f"Nasdaq {len(set(nasdaq) & set(prices['Ticker']))}/{len(nasdaq)}"
+            f"Titres valides : {len(prices)} | "
+            f"Rejetés (non reconnus) : {len(rejected)}"
         )
+
+        if rejected:
+            with st.expander("Voir les Symbol rejetés"):
+                st.write(sorted(rejected))
 
         c1, c2, c3 = st.columns(3)
 
