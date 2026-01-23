@@ -8,6 +8,12 @@ POLYGON_KEY = st.secrets["POLYGON_API_KEY"]
 NASDAQ_CAP = 0.14
 
 # =========================
+# NORMALISATION UNIQUE
+# =========================
+def normalize(t):
+    return str(t).upper().replace(".", "-").strip()
+
+# =========================
 # LOAD TICKERS
 # =========================
 def load_tickers(file):
@@ -15,9 +21,7 @@ def load_tickers(file):
     return (
         df.iloc[:, 0]
         .dropna()
-        .astype(str)
-        .str.replace(".", "-", regex=False)
-        .str.upper()
+        .apply(normalize)
         .unique()
         .tolist()
     )
@@ -37,11 +41,16 @@ def get_grouped_prices():
 
     rows = []
     for x in r.get("results", []):
-        rows.append([
-            x["T"],
-            x["c"],
-            (x["c"] - x["o"]) / x["o"] * 100 if x["o"] else 0
-        ])
+        ticker = normalize(x["T"])
+        close = x["c"]
+        open_ = x["o"]
+
+        if open_:
+            ret = (close - open_) / open_ * 100
+        else:
+            ret = 0
+
+        rows.append([ticker, close, ret])
 
     return pd.DataFrame(rows, columns=["Ticker", "Price", "Return %"])
 
@@ -70,10 +79,11 @@ def apply_cap(w, cap):
     return w / w.sum()
 
 # =========================
-# BUILD TABLE
+# BUILD INDEX
 # =========================
 def build_index(tickers, kind, prices, caps):
     df = prices[prices["Ticker"].isin(tickers)].copy()
+
     if df.empty:
         return df
 
@@ -91,7 +101,6 @@ def build_index(tickers, kind, prices, caps):
 
         df["Impact %"] = df["Weight (%)"] * df["Return %"] / 100
 
-    df["Impact"] = df["Impact %"].apply(lambda x: "🟢" if x > 0 else "🔴")
     return df.sort_values("Impact %", ascending=False)
 
 # =========================
@@ -102,6 +111,14 @@ st.title("📊 Impact (%) des actions sur les indices — PRO")
 if st.button("🔄 Calcul"):
     prices = get_grouped_prices()
     caps = get_caps(ALL)
+
+    # 🔍 DEBUG VISUEL (IMPORTANT)
+    st.caption(
+        f"📊 Prix Polygon chargés : {len(prices)} | "
+        f"Dow: {len(set(dow) & set(prices['Ticker']))} / {len(dow)} | "
+        f"S&P: {len(set(sp500) & set(prices['Ticker']))} / {len(sp500)} | "
+        f"Nasdaq: {len(set(nasdaq) & set(prices['Ticker']))} / {len(nasdaq)}"
+    )
 
     c1, c2, c3 = st.columns(3)
 
