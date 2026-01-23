@@ -1,25 +1,17 @@
 import streamlit as st
 import pandas as pd
-import requests
 import yfinance as yf
 
 # ==================================================
 # CONFIG
 # ==================================================
 st.set_page_config(layout="wide")
-POLYGON_KEY = st.secrets["POLYGON_API_KEY"]
 NASDAQ_CAP = 0.14
 
 # ==================================================
-# NORMALISATION DES TICKERS (FIX FINAL)
+# NORMALISATION DES TICKERS
 # ==================================================
 def normalize(t):
-    """
-    Nettoie les tickers provenant d'Excel / Bloomberg / Yahoo :
-    - enlève les suffixes (US, UW, OQ, etc.)
-    - remplace . par -
-    - uppercase
-    """
     t = str(t).upper().strip()
     if " " in t:
         t = t.split(" ")[0]
@@ -43,39 +35,49 @@ dow = load_tickers("Dow.xlsx")
 nasdaq = load_tickers("Nasdaq100.xlsx")
 sp500 = load_tickers("sp500_constituents.xlsx")
 
-ALL_TICKERS = set(dow + nasdaq + sp500)
+ALL_TICKERS = list(set(dow + nasdaq + sp500))
 
 # ==================================================
-# POLYGON GROUPED (STABLE & FIABLE)
+# PRICES & RETURNS VIA YAHOO
 # ==================================================
-@st.cache_data(ttl=30)
-def get_grouped_prices():
-    url = (
-        "https://api.polygon.io/v2/aggs/grouped/"
-        f"locale/us/market/stocks/prev?apiKey={POLYGON_KEY}"
+@st.cache_data(ttl=60)
+def get_prices_and_returns(tickers):
+    data = yf.download(
+        tickers,
+        period="2d",
+        interval="1d",
+        group_by="ticker",
+        auto_adjust=False,
+        threads=True,
+        progress=False,
     )
-    r = requests.get(url, timeout=10).json()
 
     rows = []
-    for x in r.get("results", []):
-        ticker = normalize(x["T"])
-        close = x["c"]
-        open_ = x["o"]
 
-        if open_ and open_ != 0:
-            ret = (close - open_) / open_ * 100
-        else:
-            ret = 0
+    for t in tickers:
+        try:
+            df = data[t]
+            if len(df) < 2:
+                continue
 
-        rows.append([ticker, close, ret])
+            prev = df["Close"].iloc[-2]
+            last = df["Close"].iloc[-1]
+
+            if prev == 0:
+                continue
+
+            ret = (last - prev) / prev * 100
+            rows.append([t, last, ret])
+        except:
+            continue
 
     return pd.DataFrame(rows, columns=["Ticker", "Price", "Return %"])
 
 # ==================================================
-# MARKET CAPS
+# MARKET CAPS VIA YAHOO
 # ==================================================
 @st.cache_data(ttl=86400)
-def get_caps(tickers):
+def get_market_caps(tickers):
     caps = {}
     for t in tickers:
         try:
@@ -88,7 +90,7 @@ def get_caps(tickers):
 # NASDAQ CAP
 # ==================================================
 def apply_cap(w, cap):
-    while not w.empty and w.max() > cap:
+    while w.max() > cap:
         excess = (w[w > cap] - cap).sum()
         w[w > cap] = cap
         rest = w < cap
@@ -131,30 +133,37 @@ def build_index(tickers, kind, prices, caps):
 # ==================================================
 # UI
 # ==================================================
-st.title("📊 Impact (%) des actions sur les indices — VERSION PRO")
+st.title("📊 Impact (%) des actions sur les indices — Yahoo Finance")
+
+st.caption(
+    "Données Yahoo Finance (retard ~15 min) — Version stable, non vide"
+)
 
 if st.button("🔄 Calcul"):
-    prices = get_grouped_prices()
-    caps = get_caps(ALL_TICKERS)
+    with st.spinner("Chargement des données Yahoo…"):
+        prices = get_prices_and_returns(ALL_TICKERS)
+        caps = get_market_caps(ALL_TICKERS)
 
-    # DEBUG VISUEL (IMPORTANT)
-    st.caption(
-        f"📊 Prix Polygon : {len(prices)} | "
-        f"Dow {len(set(dow) & set(prices['Ticker']))}/{len(dow)} | "
-        f"S&P {len(set(sp500) & set(prices['Ticker']))}/{len(sp500)} | "
-        f"Nasdaq {len(set(nasdaq) & set(prices['Ticker']))}/{len(nasdaq)}"
-    )
+        st.caption(
+            f"Tickers chargés : {len(prices)} | "
+            f"Dow {len(set(dow) & set(prices['Ticker']))}/{len(dow)} | "
+            f"S&P {len(set(sp500) & set(prices['Ticker']))}/{len(sp500)} | "
+            f"Nasdaq {len(set(nasdaq) & set(prices['Ticker']))}/{len(nasdaq)}"
+        )
 
-    c1, c2, c3 = st.columns(3)
+        c1, c2, c3 = st.columns(3)
 
-    with c1:
-        st.subheader("🔵 Dow Jones")
-        st.dataframe(build_index(dow, "dow", prices, caps).head(15), width="stretch")
+        with c1:
+            st.subheader("🔵 Dow Jones")
+            st.dataframe(build_index(dow, "dow", prices, caps).head(15), width="stretch")
 
-    with c2:
-        st.subheader("🟢 S&P 500")
-        st.dataframe(build_index(sp500, "sp500", prices, caps).head(15), width="stretch")
+        with c2:
+            st.subheader("🟢 S&P 500")
+            st.dataframe(build_index(sp500, "sp500", prices, caps).head(15), width="stretch")
 
-    with c3:
-        st.subheader("🟣 Nasdaq 100")
-        st.dataframe(build_index(nasdaq, "nasdaq", prices, caps).head(15), width="stretch")
+        with c3:
+            st.subheader("🟣 Nasdaq 100")
+            st.dataframe(build_index(nasdaq, "nasdaq", prices, caps).head(15), width="stretch")
+
+else:
+    st.info("Clique sur **Calcul** pour afficher les contributions.")
