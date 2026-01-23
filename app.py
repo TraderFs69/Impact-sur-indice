@@ -32,7 +32,7 @@ sp500 = load_tickers("sp500_constituents.xlsx")
 ALL_TICKERS = sorted(set(dow + nasdaq + sp500))
 
 # ======================================
-# YAHOO — PRIX + RETURN (TICKER PAR TICKER)
+# YAHOO — PRICES + RETURNS
 # ======================================
 @st.cache_data(ttl=120)
 def get_prices_and_returns(tickers):
@@ -56,24 +56,36 @@ def get_prices_and_returns(tickers):
             ret = (last - prev) / prev * 100
             rows.append([t, last, ret])
 
-            time.sleep(0.02)  # anti rate-limit
+            time.sleep(0.015)
         except:
             failed.append(t)
 
-    df = pd.DataFrame(rows, columns=["Ticker", "Price", "Return %"])
-    return df, failed
+    return pd.DataFrame(rows, columns=["Ticker", "Price", "Return %"]), failed
 
 # ======================================
-# MARKET CAPS — YAHOO
+# MARKET CAPS — ROBUSTE (FAST + FALLBACK)
 # ======================================
 @st.cache_data(ttl=3600)
 def get_market_caps(tickers):
     caps = {}
+
     for t in tickers:
         try:
-            caps[t] = yf.Ticker(t).fast_info.get("market_cap")
+            tk = yf.Ticker(t)
+
+            # 1️⃣ fast_info
+            cap = tk.fast_info.get("market_cap")
+
+            # 2️⃣ fallback info
+            if cap is None:
+                cap = tk.info.get("marketCap")
+
+            caps[t] = cap
+            time.sleep(0.01)
+
         except:
             caps[t] = None
+
     return caps
 
 # ======================================
@@ -81,6 +93,7 @@ def get_market_caps(tickers):
 # ======================================
 def apply_cap(weights, cap):
     w = weights.copy()
+
     while not w.empty and w.max() > cap:
         excess = (w[w > cap] - cap).sum()
         w[w > cap] = cap
@@ -88,10 +101,11 @@ def apply_cap(weights, cap):
         if rest.sum() == 0:
             break
         w[rest] += w[rest] / w[rest].sum() * excess
+
     return w / w.sum()
 
 # ======================================
-# BUILD INDEX TABLE
+# BUILD INDEX
 # ======================================
 def build_index(tickers, kind, prices, caps):
     df = prices[prices["Ticker"].isin(tickers)].copy()
@@ -104,23 +118,26 @@ def build_index(tickers, kind, prices, caps):
 
     else:
         df["MarketCap"] = df["Ticker"].map(caps)
-        df = df.dropna(subset=["MarketCap"])
+        df = df[df["MarketCap"].notna() & (df["MarketCap"] > 0)]
+
+        if df.empty:
+            return df
+
         df["Weight (%)"] = df["MarketCap"] / df["MarketCap"].sum() * 100
 
         if kind == "nasdaq":
             df["Weight (%)"] = apply_cap(df["Weight (%)"] / 100, NASDAQ_CAP) * 100
 
-    df["Impact %"] = df["Weight (%)"] * df["Return %"] / 100
-    df["Impact sens"] = df["Impact %"].apply(
-        lambda x: "🟢 Positif" if x > 0 else "🔴 Négatif"
-    )
+    # 👉 impact en % x 100 (visuel rapide)
+    df["Impact x100"] = df["Weight (%)"] * df["Return %"]
+    df["Sens"] = df["Impact x100"].apply(lambda x: "🟢" if x > 0 else "🔴")
 
-    return df.sort_values("Impact %", ascending=False)
+    return df.sort_values("Impact x100", ascending=False)
 
 # ======================================
 # UI
 # ======================================
-st.title("📊 Impact (%) des actions sur les indices — Yahoo Finance")
+st.title("📊 Impact des actions sur les indices — Yahoo Finance")
 
 if st.button("🔄 Calcul live"):
     with st.spinner("Récupération Yahoo Finance…"):
@@ -141,21 +158,21 @@ if st.button("🔄 Calcul live"):
         c1, c2, c3 = st.columns(3)
 
         with c1:
-            st.subheader("🔵 Dow Jones (price-weighted)")
+            st.subheader("🔵 Dow Jones")
             st.dataframe(
                 build_index(dow, "dow", prices, caps).head(15),
                 width="stretch"
             )
 
         with c2:
-            st.subheader("🟢 S&P 500 (cap-weighted)")
+            st.subheader("🟢 S&P 500")
             st.dataframe(
                 build_index(sp500, "sp500", prices, caps).head(15),
                 width="stretch"
             )
 
         with c3:
-            st.subheader("🟣 Nasdaq 100 (cap-weighted, cap 14 %)")
+            st.subheader("🟣 Nasdaq 100")
             st.dataframe(
                 build_index(nasdaq, "nasdaq", prices, caps).head(15),
                 width="stretch"
