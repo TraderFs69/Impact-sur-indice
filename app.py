@@ -14,18 +14,19 @@ NASDAQ_CAP = 0.14
 def normalize(t):
     t = str(t).upper().strip()
     if " " in t:
-        t = t.split(" ")[0]
-    t = t.replace(".", "-")
+        t = t.split(" ")[0]      # enlève suffixes type "US", "UW"
+    t = t.replace(".", "-")      # BRK.B -> BRK-B
     return t
 
 # ==================================================
-# LOAD TICKERS
+# LOAD TICKERS — COLONNE A UNIQUEMENT
 # ==================================================
 def load_tickers(file):
-    df = pd.read_excel(file)
+    df = pd.read_excel(file, usecols=[0])  # colonne A forcée
     return (
         df.iloc[:, 0]
         .dropna()
+        .astype(str)
         .apply(normalize)
         .unique()
         .tolist()
@@ -38,7 +39,7 @@ sp500 = load_tickers("sp500_constituents.xlsx")
 ALL_TICKERS = list(set(dow + nasdaq + sp500))
 
 # ==================================================
-# PRICES & RETURNS VIA YAHOO
+# PRICES & RETURNS VIA YAHOO FINANCE
 # ==================================================
 @st.cache_data(ttl=60)
 def get_prices_and_returns(tickers):
@@ -47,7 +48,6 @@ def get_prices_and_returns(tickers):
         period="2d",
         interval="1d",
         group_by="ticker",
-        auto_adjust=False,
         threads=True,
         progress=False,
     )
@@ -87,9 +87,10 @@ def get_market_caps(tickers):
     return caps
 
 # ==================================================
-# NASDAQ CAP
+# NASDAQ CAP FUNCTION
 # ==================================================
-def apply_cap(w, cap):
+def apply_cap(weights, cap):
+    w = weights.copy()
     while w.max() > cap:
         excess = (w[w > cap] - cap).sum()
         w[w > cap] = cap
@@ -135,12 +136,10 @@ def build_index(tickers, kind, prices, caps):
 # ==================================================
 st.title("📊 Impact (%) des actions sur les indices — Yahoo Finance")
 
-st.caption(
-    "Données Yahoo Finance (retard ~15 min) — Version stable, non vide"
-)
+st.caption("Données Yahoo Finance (≈15 min de délai) — Version stable")
 
 if st.button("🔄 Calcul"):
-    with st.spinner("Chargement des données Yahoo…"):
+    with st.spinner("Chargement des données…"):
         prices = get_prices_and_returns(ALL_TICKERS)
         caps = get_market_caps(ALL_TICKERS)
 
