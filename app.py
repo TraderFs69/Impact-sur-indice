@@ -11,8 +11,8 @@ st.set_page_config(layout="wide")
 NASDAQ_CAP = 0.14
 DOW_DIVISOR = 0.151987
 
-SP500_LEVEL = 5000     # approximation (modifiable)
-NASDAQ_LEVEL = 17000  # approximation (modifiable)
+SP500_LEVEL = 5000     # approximation
+NASDAQ_LEVEL = 17000  # approximation
 
 # ======================================
 # LOAD TICKERS
@@ -66,10 +66,12 @@ def get_prices_and_returns(tickers):
         except:
             failed.append(t)
 
-    return pd.DataFrame(
+    df = pd.DataFrame(
         rows,
         columns=["Ticker", "Price", "Return %", "Delta $"]
-    ), failed
+    )
+
+    return df, failed
 
 # ======================================
 # MARKET CAPS
@@ -107,13 +109,12 @@ def apply_cap(weights, cap):
 def build_index(tickers, kind, prices, caps):
     df = prices[prices["Ticker"].isin(tickers)].copy()
     if df.empty:
-        return df, 0
+        return df, 0.0
 
     if kind == "dow":
         total_price = df["Price"].sum()
         df["Weight %"] = df["Price"] / total_price * 100
-        df["Impact x100"] = df["Weight %"] * df["Return %"]
-
+        df["Impact %"] = df["Weight %"] * df["Return %"] / 100
         total_points = df["Delta $"].sum() / DOW_DIVISOR
 
     else:
@@ -125,19 +126,28 @@ def build_index(tickers, kind, prices, caps):
         if kind == "nasdaq":
             df["Weight %"] = apply_cap(df["Weight %"] / 100, NASDAQ_CAP) * 100
 
-        df["Impact x100"] = df["Weight %"] * df["Return %"]
-        total_impact_pct = df["Impact x100"].sum() / 100
+        # ✅ correction : / 10 000
+        df["Impact %"] = df["Weight %"] * df["Return %"] / 10000
+        total_impact = df["Impact %"].sum()
 
         if kind == "sp500":
-            total_points = SP500_LEVEL * total_impact_pct
+            total_points = SP500_LEVEL * total_impact
         else:
-            total_points = NASDAQ_LEVEL * total_impact_pct
+            total_points = NASDAQ_LEVEL * total_impact
 
-    df["Sens"] = df["Impact x100"].apply(lambda x: "🟢" if x > 0 else "🔴")
+    df["Sens"] = df["Impact %"].apply(lambda x: "🟢" if x > 0 else "🔴")
 
-    df = df.drop(columns=["Ticker", "MarketCap"], errors="ignore")
+    # =========================
+    # FORMAT 2 DÉCIMALES
+    # =========================
+    for col in ["Price", "Return %", "Weight %", "Impact %"]:
+        if col in df:
+            df[col] = df[col].astype(float).round(2)
 
-    return df.sort_values("Impact x100", ascending=False), total_points
+    df = df.drop(columns=["MarketCap"], errors="ignore")
+    df = df.reset_index(drop=True)
+
+    return df.sort_values("Impact %", ascending=False), round(total_points, 2)
 
 # ======================================
 # UI
@@ -157,17 +167,17 @@ if st.button("🔄 Calcul live"):
 
         with col1:
             st.subheader("🔵 Dow Jones")
-            st.metric("Impact total", f"{dow_pts:+.2f} points")
+            st.metric("Impact total", f"{dow_pts:+.2f} pts")
             st.dataframe(dow_df.head(15), width="stretch")
 
         with col2:
             st.subheader("🟢 S&P 500")
-            st.metric("Impact estimé", f"{sp_pts:+.2f} points")
+            st.metric("Impact estimé", f"{sp_pts:+.2f} pts")
             st.dataframe(sp_df.head(15), width="stretch")
 
         with col3:
             st.subheader("🟣 Nasdaq 100")
-            st.metric("Impact estimé", f"{nas_pts:+.2f} points")
+            st.metric("Impact estimé", f"{nas_pts:+.2f} pts")
             st.dataframe(nas_df.head(15), width="stretch")
 
         if failed:
